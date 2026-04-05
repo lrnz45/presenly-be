@@ -2,8 +2,8 @@ import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { INestApplication } from '@nestjs/common';
 
-/** Urutan tag di Swagger UI */
 const SWAGGER_TAG_ORDER = ['auth', 'health', 'institutions'];
 
 function sortOpenApiTags(document: {
@@ -22,10 +22,14 @@ function sortOpenApiTags(document: {
   document.tags = ordered;
 }
 
-async function bootstrap() {
+let cachedApp: INestApplication;
+
+async function createApp(): Promise<INestApplication> {
+  // Reuse instance agar tidak buat koneksi baru setiap request
+  if (cachedApp) return cachedApp;
+
   const app = await NestFactory.create(AppModule);
   app.enableCors();
-
   app.setGlobalPrefix('api');
   app.enableVersioning({
     type: VersioningType.URI,
@@ -43,12 +47,6 @@ async function bootstrap() {
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Presenly API')
-    // .setDescription(
-    //   'REST API selaras skema PostgreSQL / Supabase. ' +
-    //     'Auth: `POST /auth/register`, `POST /auth/login`, `POST /auth/google`. ' +
-    //     'Setelah login gunakan **Bearer JWT**; untuk `/institutions/me` sementara bisa juga `x-institution-id`. ' +
-    //     'Lingkungan: set `JWT_SECRET`, opsional `JWT_EXPIRES_IN` (mis. `7d`), `GOOGLE_CLIENT_ID` untuk Google Sign-In.',
-    // )
     .setVersion('1.0')
     .addBearerAuth()
     .addApiKey(
@@ -72,17 +70,30 @@ async function bootstrap() {
   sortOpenApiTags(document);
 
   SwaggerModule.setup('api/docs', app, document, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
+    swaggerOptions: { persistAuthorization: true },
   });
 
-  const port = process.env.PORT ?? 4000;
-  await app.listen(port);
-  // eslint-disable-next-line no-console
-  console.log(`Application: http://localhost:${port}/api/v1/health`);
-  // eslint-disable-next-line no-console
-  console.log(`Swagger UI:  http://localhost:${port}/api/docs`);
+  await app.init(); // ← init() bukan listen()
+
+  cachedApp = app;
+  return app;
 }
 
-bootstrap();
+// Untuk local development
+if (process.env.NODE_ENV !== 'production') {
+  async function bootstrap() {
+    const app = await createApp();
+    const port = process.env.PORT ?? 4000;
+    await app.listen(port);
+    console.log(`Application: http://localhost:${port}/api/v1/health`);
+    console.log(`Swagger UI:  http://localhost:${port}/api/docs`);
+  }
+  bootstrap();
+}
+
+// Export handler untuk Vercel (serverless)
+export default async (req: any, res: any) => {
+  const app = await createApp();
+  const httpAdapter = app.getHttpAdapter().getInstance();
+  httpAdapter(req, res);
+};
